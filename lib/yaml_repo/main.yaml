@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: pod
+resources:
+  - kubernetes_dashboard.yml
+  - create_admin_in_dsahboard.yml
+  - create_dashboard_user_binding.yml
+  - mysql-deployment.yml
+  - wordpress-deployment.yml

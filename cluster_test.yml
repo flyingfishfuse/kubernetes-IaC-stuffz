@@ -1,0 +1,98 @@
+###############################################################################
+#     BWAPP TRAINING DEPLOYMENT
+###############################################################################
+# the TYPE of entity, this is a POD which refers to a container with an OS inside it
+# this is what hold the application logic and is the worker performing logic
+apiVersion: v1
+kind: Deployment
+# Just labels and names, no infra gets created with this, 
+# its just to label things for tracking
+metadata:
+  name: test-deployment
+  namespace: test-namespace
+  labels:
+    app: test-app
+# this is what defines infrastructure, this is what defines the item
+spec:
+  containers:
+  - name: caldera
+    image: raesene/bwapp
+    #args:
+###############################################################################
+---
+# A service is a layer between the POD and the OUTSIDE
+# the SELECTOR is the thing that tells kubernetes what pod the service is \
+# to be assigned to
+# Your application service gets a network request. Then, it makes an inventory 
+# of all those Pods in your Kubernetes cluster that match the service's 
+# selector, picks one and forwards it to the network requesting it. 
+apiVersion: v1
+kind: Service
+metadata:
+  name: caldera-service
+  namespace: caldera-namespace
+spec:
+  selector:
+    # this is directly referring to the "app: bwapp" line in the metadata
+    # for POD bwapp it MUST be the same
+    # SELECTOR is specifically SELECTING 
+    #app: bwapp
+    app.kubernetes.io/name: caldera-pod
+  type: NodePort
+  ports:
+    - protocol: TCP
+    # the port to serve on
+      port: 80
+      # what port to access/proxy to on the POD you are running the application in
+      targetPort: 80
+  # Default port used by the image
+  # this is what port kubernetes is going to be looking for and sending data TO
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  # the name here should match the name of the Service
+  name: caldera-service
+subsets:
+  - addresses:
+      - ip: 192.168.47.128
+    ports:
+      - port: 8082
+---
+###############################################################################
+# This is for instancing network related infrastructure and assignments
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cluster-ingress
+  namespace: ingress-namespace
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: ingress
+  rules:
+    - host: devbox.local
+      http:
+        paths:
+      #bwapp
+          - pathType: Prefix
+            path: "/bwapp"
+            backend:
+              service:
+                name: bwapp-service
+                port:
+                  number: 80
+          - pathType: Prefix
+            path: "/wordpress"
+            backend:
+              service:
+                name: wordpress
+                port:
+                  number: 80
+          - pathType: Prefix
+            path: "/dashboard"
+            backend:
+              service:
+                name: "dashboard"
+                port:
+                  number: 80

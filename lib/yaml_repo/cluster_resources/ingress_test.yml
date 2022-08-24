@@ -1,0 +1,103 @@
+###############################################################################
+#     BWAPP TRAINING DEPLOYMENT
+###############################################################################
+# the TYPE of entity, this is a POD which refers to a container with an OS inside it
+kind: Pod
+apiVersion: v1
+# Just labels and names, no infra gets created with this, 
+# its just to label things for tracking
+metadata:
+  name: bwapp-pod
+  labels:
+    app: bwapp
+# this is what defines infrastructure, this is what defines the item
+spec:
+  containers:
+  - name: bwapp
+    image: raesene/bwapp
+    #args:
+###############################################################################
+---
+# A service is a layer between the POD and the OUTSIDE
+# the SELECTOR is the thing that tells kubernetes what pod the service is \
+# to be assigned to
+# Your application service gets a network request. Then, it makes an inventory 
+# of all those Pods in your Kubernetes cluster that match the service's 
+# selector, picks one and forwards it to the network requesting it. 
+kind: Service
+apiVersion: v1
+metadata:
+  name: bwapp-service
+spec:
+  selector:
+    # this is directly referring to the "app: bwapp" line in the metadata
+    # for POD bwapp it MUST be the same
+    # SELECTOR is specifically SELECTING 
+    app: bwapp
+  ports:
+  # Default port used by the image
+  # this is what port kubernetes is going to be looking for and sending data TO
+  - port: 80
+######################
+#     JUICE SHOP POD
+###############################################################################
+---
+kind: Pod
+apiVersion: v1
+metadata:
+  name: juiceshop-pod
+  labels:
+    app: juiceshop
+spec:
+  containers:
+  - name: juiceshop
+    image: bkimminich/juice-shop
+###############################################################################
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: juiceshop-service
+spec:
+  selector:
+    app: juiceshop
+  ports:
+  # Default port used by the image
+  - port: 3000
+---
+###############################################################################
+# This is for instancing network related infrastructure and assignments
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cluster-ingress
+spec:
+  rules:
+  - http:
+      paths:
+      #bwapp
+      - pathType: Prefix
+        path: "/bwapp"
+        backend:
+          service:
+            name: bwapp-service
+            port:
+              number: 80
+      # juiceshop
+      # docker run --rm -p 3000:3000 bkimminich/juice-shop
+      - pathType: Prefix
+        path: "/juiceshop"
+        backend:
+          service:
+            name: juiceshop-service
+            port:
+              number: 3000
+      #wordpress
+      - pathType: Prefix
+        path: "/wordpress"
+        backend:
+          service:
+            name: wordpress-service
+            port:
+              number: 3306
+---
