@@ -1,27 +1,133 @@
-## required packages
+# installing tooling for kubernetes with dockerd
 
->`Kubernetes`
-```bash 
-source ~/Desktop/sysadmin_package/flange.sh /
-install_golang_single_user && /
-setup_for_kubernetes && /
-install_kubernetes
+## A quick breakdown
+1. install docker
+2. install cri-dockerd
+3. install kubelet/kubeadm/kubectl
+4. install helm
+
+
+
+## installing docker in WSL2 without docker dashboard/desktop
+> you can omit specific operations for linux
+
+1. Install pre-required packages
+```bash
+sudo apt update
+sudo apt install --no-install-recommends apt-transport-https ca-certificates curl gnupg2
+```
+2. Configure package repository
+```bash
+source /etc/os-release
+curl -fsSL https://download.docker.com/linux/${ID}/gpg | sudo apt-key add -
+echo "deb [arch=amd64] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update
+```
+3. Install Docker
+```bash
+sudo apt install docker-ce docker-ce-cli containerd.io
+```
+4. Add user to group
+```bash
+sudo usermod -aG docker $USER
+```
+5. Configure dockerd (windows/WSL2)
+```bash
+DOCKER_DIR=/mnt/wsl/shared-docker
+mkdir -pm o=,ug=rwx "$DOCKER_DIR"
+sudo chgrp docker "$DOCKER_DIR"
+sudo mkdir /etc/docker
+#sudo <your_text_editor> /etc/docker/daemon.json
+```
+```bash
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+   "hosts": ["unix:///mnt/wsl/shared-docker/docker.sock"]
+   # Note! Debian will also need the following line, I do not use other distros so you may still need this.
+   "iptables": false
+}
+EOF
 ```
 
->`cri-dockerd from mirantis`
+>`To always run dockerd automatically (Windows 10/WSL2)`
 
-cri-dockerd is a "shim" that inserts between kubernetes and docker to implement Continer runtime interface for docker containers that
-deviate from CRI in releases past (insert release version here)
+Add the following to .bashrc or .profile (make sure “DOCKER_DISTRO” matches your distro, you can check it by running “wsl -l -q” in Powershell)
 
 ```bash
-https://github.com/Mirantis/cri-dockerd/releases/download/v0.2.5/cri-dockerd_0.2.5.3-0.debian-buster_amd64.deb
+DOCKER_DISTRO="Debian"
+DOCKER_DIR=/mnt/wsl/shared-docker
+DOCKER_SOCK="$DOCKER_DIR/docker.sock"
+export DOCKER_HOST="unix://$DOCKER_SOCK"
+if [ ! -S "$DOCKER_SOCK" ]; then
+   mkdir -pm o=,ug=rwx "$DOCKER_DIR"
+   sudo chgrp docker "$DOCKER_DIR"
+   /mnt/c/Windows/System32/wsl.exe -d $DOCKER_DISTRO sh -c "nohup sudo -b dockerd < /dev/null > $DOCKER_DIR/dockerd.log 2>&1"
+fi
+```
+---
+## Installing Kubernetes
+
+### system prep for kubernetes to run properly
+>`in WSL2 (using cmdr at least) you need to open the files and remove leading spaces after running these commands. These commands work on linux without issue (debian)`
+```bash
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+  br_netfilter
+EOF
+
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+  net.bridge.bridge-nf-call-ip6tables = 1
+  net.bridge.bridge-nf-call-iptables = 1
+EOF
+```
+
+### installing kubernetes applications
+
+> `modify kubernetes-xenial string as needed`
+```bash
+sudo sysctl --system
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl
+sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+```
+---
+
+## cri-dockerd from mirantis
+
+cri-dockerd is a "shim" that inserts between kubernetes and docker to implement Continer runtime interface for docker containers that deviate from CRI in releases past (insert release version here)
+
+#### `linux instructions`
+```bash
+# old
+#https://github.com/Mirantis/cri-dockerd/releases/download/v0.2.5/cri-dockerd_0.2.5.3-0.debian-buster_amd64.deb
+# newer
+curl https://github.com/Mirantis/cri-dockerd/releases/download/v0.2.6/cri-dockerd_0.2.6.3-0.debian-stretch_amd64.deb
 sudo dpkg -i cri-dockerd_0.2.5.3-0.debian-buster_amd64.deb
 sudo systemctl daemon-reload
 sudo systemctl enable cri-docker.service
 sudo systemctl enable --now cri-docker.socket
 sudo systemctl start cri-docker.service cri-docker.socket
 ```
+---
+### `windows instructions`
 
+>`on WSL2 you need to manually run cri-dockerd or create a windows file, that runs on boot, or use a command line parameter when calling WSL.exe`
+* you can add `cri-dockerd` to your `~/.bashrc` and put an entry in `/etc/sudoers` for passwordless operation
+```bash 
+#~/.bashrc entry
+nohup cri-dockerd &
+```
+```bash
+#/etc/sudoers entry
+<USERNAME> ALL = NOPASSWD: /user/bin/cri-dockerd
+```
+* you can call `wsl.exe` with the service name as a parameter using `{TODO: insert proper string here}`
+* TODO: add instructions for the windows file necessary to boot wsl2 with service active
+
+---
 the default network plugin for `cri-dockerd` is set to `cni` on Linux. To change this, `--network-plugin=${plugin}`
 can be passed in as a command line argument if invoked manually, or the systemd unit file
 (`/usr/lib/systemd/system/cri-docker.service` if not enabled yet,
