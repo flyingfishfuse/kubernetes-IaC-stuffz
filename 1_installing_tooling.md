@@ -19,6 +19,7 @@
 
 ## upgrade WSL2 Debian(Stretch) to Debian(Bullseye)
 1. Begin by backing up your WSL2 container in POWERSHELL
+
 navigate to the directory you wish to backup the WSL2 distribution in then run the following command
 ```powershell
 wsl --export Debian debian10.tar
@@ -30,6 +31,8 @@ sudo apt-get update && sudo apt-get upgrade
 ```
 
 3. Add the official repositories for Bullseye to your `/etc/apt/sources.d`
+`COMMENT OUT THE PREVIOUS STRETCH REPOSITORIES`
+
 ```shell
 deb http://deb.debian.org/debian bullseye main
 deb http://deb.debian.org/debian bullseye-updates main
