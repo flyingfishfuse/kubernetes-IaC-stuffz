@@ -109,6 +109,7 @@ kvm_required_packages="qemu-kvm libvirt-bin virtinst bridge-utils cpu-checker"
 kubernetes_required_packages=" "
 docker_required_packages=""
 
+
 # sets location for backups of configs and various files
 home_dir="/home/$USER"
 backups_location="$home_dir/Desktop/backups"
@@ -193,29 +194,7 @@ cecho ()
   #printf "%b \n" "${color}${message}"
   tput sgr0 #Reset # Reset to normal.
 } 
-########################################
-# run before any intensive or irrevesable operations
-########################################
-warning_message()
-{
-docs_doc=$(cat <<EOF
-"[!] This script cannot be left unattended, it requires user input"\n
-change the ip addresses in the variables section to reflect your setup
-EOF
-)
-cecho "$docs_doc" "$red"
-while true; do
-  cecho "[!] Do you wish to use lots of data and time downloading and installing things?" "$red"
-  cecho "[?]" "$red"; cecho "y/N ?" "$green"
-  read -e -i "n" confirm && [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]] || exit 1
-  case $confirm in
-      [Yy]* ) continue;;
-      [Nn]* ) exit;;
-      * ) cecho "Please answer yes or no." "$green";;
-  esac
-done
 
-}
 ########################################
 # combining heredocs
 # usage:
@@ -256,7 +235,7 @@ echo "wat"
 # to apply to /etc/hosts on control plane
 # param1 : control_hosts_file
 ###############################################
-controller_create_hosts_file()
+both_create_hosts_file()
 {
 # to be added to controller hosts file
 worker_hosts_addendum=$(cat <<EOF
@@ -271,6 +250,7 @@ new_hosts_heredoc=append_heredocs "$1" "$worker_hosts_addendum"
 echo "$new_hosts_heredoc"
 }
 
+
 #####################################################
 # puts the worker and control plane in the hosts file
 #####################################################
@@ -278,7 +258,7 @@ control_set_hosts(){
 # create the hosts file from supplied parameters at top of script
 new_hosts_file=$(controller_create_hosts_file "$control_hosts_file")
 # place in /etc for NATLAN access
-sudo echo $new_hosts_file > /etc/hosts
+"$new_hosts_file" | sudo tee /etc/hosts
 # prevent changes to dns configuration
 sudo chattr +i /etc/hosts
 # done! :)
@@ -288,18 +268,68 @@ sudo chattr +i /etc/hosts
 # returns a heredoc of the worker host file
 # to apply to /etc/hosts on worker node
 # param1 : worker_hosts_file
+###############################################################################
+# REMOVE AFTER TESTS
+###############################################################################
+control_plane_hostname="control"
+worker_hostname="worker"
+
+# 3 for good redundancy
+number_of_controllers=3
+# 192.168.0.2 controller1
+# 192.168.0.3 controller2
+# 192.168.0.4 controller3
+
+number_of_workers=3
+# 192.168.0.5 worker1
+# 192.168.0.6 worker2
+# 192.168.0.7 worker3
+
+# ip to start at 192.168.0.2
+# with three controllers, starting at 2
+# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
+
+worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
+echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
+worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
+echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip"
+
+control_hosts_file=$(cat<<EOF
+# Host addresses 
+127.0.0.1  localhost
+127.0.1.1  $control_plane_hostname
+::1        localhost ip6-localhost ip6-loopback
+ff02::1    ip6-allnodes
+ff02::2    ip6-allrouters
+EOF
+)
+#WORKER NODE HOSTS FILE CONFGURATION
+#######################################
+worker_hosts_file=$(cat<<EOF
+# Host addresses 
+127.0.0.1  localhost
+127.0.1.1  $worker_hostname
+::1        localhost ip6-localhost ip6-loopback
+ff02::1    ip6-allnodes
+ff02::2    ip6-allrouters
+EOF
+)
+
+###############################################################################
+# REMOVE AFTER TESTS
+###############################################################################
 worker_create_hosts_file()
 {
-worker_ip=$worker_ip_range_start
-# to be added to controller hosts file
+echo "starting ip address of worker nodes is 192.168.0.$worker_ip"
+# to be added to worker hosts file
 controller_hosts_addendum=$(cat <<EOF
 $(
 for i in $(seq $number_of_controllers); do
-  echo "192.168.0.$i $control_plane_hostname$i"
+  echo "192.168.0.(($i+$worker_ip)) $control_plane_hostname$i"
 done
-for i in $(seq $number_of_workers); do
-  echo "192.168.0.$i $worker_hostname$i"
-done
+#for i in $(seq $number_of_workers); do
+#  echo "192.168.0.$i $worker_hostname$i"
+#done
 )
 EOF
 )
@@ -546,7 +576,9 @@ sudo systemctl enable --now cri-docker.socket
 # both_install_cri_dockerd
 both_install_tooling()
 {
-sudo apt-get install -y "$kubernetes_packages"
+# perform an install of all required packages
+sudo apt install -y "$admin_required_packages $kubernetes_required_packages $kvm_required_packages"
+
 
 # the container runtime
 both_install_docker_debian
@@ -815,3 +847,46 @@ worker_install_caldera
 worker_prepare_ssh
 
 }
+
+###############################################################################
+show_menus()
+{
+	#clear
+  cecho "# |-- BEGIN MESSAGE -- ////################################################## " "$green"
+  cecho "# |   OPTIONS IN RED ARE EITHER NOT IMPLEMENTED YET OR OUTRIGHT DANGEROUS "
+  cecho "# | 1> Install Prerequisites " "$green"
+  cecho "# | 2> Update Containers (docker-compose build) " "$green"
+  cecho "# | 4> Clean Container Cluster (WARNING: Resets Volumes, Networks and Containers) " "$yellow"
+  cecho "# | 5> REFRESH Container Cluster (WARNING: RESETS EVERYTHING) " "$red"
+  cecho "# | 13> Quit Program " "$red"
+  cecho "# |-- END MESSAGE -- ////##################################################### " "$green"
+
+  PS3="Choose your doom:"
+  select option in install update clean reset quit
+  do
+	  case $option in
+    # installs prereqs
+      install) 
+	  		installprerequisites;;
+    # updates all docker containers
+      update)
+        update_containers;;
+      # does a kubeadm reset of all namespaces
+      # also removes kubeconfig and manifests
+      clean)
+        control_reset_cluster;;
+      # exit TUI application
+      quit)
+        break;;
+      esac
+  done
+}
+#if "$MENU" '==' 1 ;then
+# run the menu if no arguments have been called
+# this also throws up the help text to walk user through operation
+if [ "$MENU" == 1 ]; then
+  while true
+  do
+    show_menus
+  done
+fi
