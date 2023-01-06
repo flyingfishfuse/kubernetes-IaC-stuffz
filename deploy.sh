@@ -119,6 +119,12 @@ ssh_config_temp="/etc/ssh/sshd_config.tmp"
 ssh_key_location="$home_dir/.ssh/"
 ssh_authorized_key_location="/home/$USER/.ssh/authorized_keys"
 
+###############################################################################
+# NETWORK MAPPING
+# HOSTNAME AND IP ADDRESSES
+###############################################################################
+# this must reflect the setup of your network, this gets added to hosts file
+
 ########################################
 # organizationl configuration
 ########################################
@@ -127,17 +133,33 @@ worker_hostname="worker"
 
 # 3 for good redundancy
 number_of_controllers=3
+# ip to start at 192.168.0.2 to allow for 192.168.0.1 to be router/ingress
+# 192.168.0.2 controller1
+# 192.168.0.3 controller2
+# 192.168.0.4 controller3
+# plus one for the indexing of ip ranging, plus one for the router/ingress
+controller_ip_range_start=$((1 + 1))
+echo "[+] starting ip address of controller nodes is 192.168.0.$controller_ip_range_start"
+controller_ip_range_end=$((number_of_controllers + 1))
+echo "[+] controller ip range end is 192.168.0.$controller_ip_range_end"
+
 number_of_workers=3
-
+# 192.168.0.5 worker1
+# 192.168.0.6 worker2
+# 192.168.0.7 worker3
+# with three controllers, starting at 2
+# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
+# plus one for the indexing of ip ranging, plus 1 for the last controller
+worker_ip_range_start=$((number_of_controllers + 2))
+echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip_range_start"
+worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
+echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
+#worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
 # ip range to start worker addresses
-worker_ip_range_start=$((number_of_controllers + number_of_workers))
 
-###############################################################################
-# NETWORK MAPPING
-# HOSTNAME AND IP ADDRESSES
-###############################################################################
-# this must reflect the setup of your network, this gets added to hosts file
 
+# DEPRECATED ######## BEGIN
+#
 #CONTROL PLANE HOSTS FILE CONFGURATION
 # the heredoc will be populated with the same number of hosts as defined in 
 # number_of_workers:int
@@ -145,34 +167,37 @@ worker_ip_range_start=$((number_of_controllers + number_of_workers))
 #######################################
 
 # todo: add number of controllers
-control_hosts_file=$(cat<<EOF
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  $control_plane_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
-EOF
-)
+#control_hosts_file=$(cat<<EOF
+## Host addresses 
+#127.0.0.1  localhost
+#127.0.1.1  $control_plane_hostname
+#::1        localhost ip6-localhost ip6-loopback
+#ff02::1    ip6-allnodes
+#ff02::2    ip6-allrouters
+#EOF
+#)
+#
+##WORKER NODE HOSTS FILE CONFGURATION
+########################################
+#worker_hosts_file=$(cat<<EOF
+## Host addresses 
+#127.0.0.1  localhost
+#127.0.1.1  $worker_hostname
+#::1        localhost ip6-localhost ip6-loopback
+#ff02::1    ip6-allnodes
+#ff02::2    ip6-allrouters
+#EOF
+#)
+# DEPRECATED ######## END
 
-#WORKER NODE HOSTS FILE CONFGURATION
 #######################################
-worker_hosts_file=$(cat<<EOF
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  worker_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
-EOF
-)
-
-
-#echo "$extra_hosts"
-###############################################################################
-# UTILITY FUNCTIONS
-###############################################################################
-
+# Appeands the host entries to the 
+# given VM, use this after copying keys
+# to worker VMs
+# param1 : worker hostname to ssh to
+# param2 : heredoc for "sudo tee /etc/hosts"
+# Example : append_to_vm_hostfile "worker1" "$new_hosts_addendum"
+#######################################
 ########################################
 #      Color echo
 ########################################
@@ -195,160 +220,130 @@ cecho ()
   tput sgr0 #Reset # Reset to normal.
 } 
 
-########################################
-# combining heredocs
-# usage:
-# hosts_file=$(cat <<EOF 
-# 127.0.0.1 hostname
-# EOF
-# )
-# extra_hosts=$(cat <<EOF
-# 192.168.0.3 worker
-# EOF
-# )
-# append_heredocs "$hosts_file" "$extra_hosts"
-########################################
-append_heredocs() {
-# Set the input and output heredocs
-input_heredoc="$1"
-output_heredoc="$2"
-output=$(cat <<HERE
-$input_heredoc
-$output_heredoc
-HERE
-)
-echo "$output"
-}
-
-
-create_KVM()
-{
-echo "wat"
-}
 
 ###############################################################################
 # NETWORKING CONFIGURATION
 ###############################################################################
 
+########################################
+# sets hosts file
+# param1 : hostname
+# param2 : $hosts_file_addendum
+########################################
+both_set_hosts(){
+# create the hosts file from supplied parameters at top of script
+new_hosts_file=$(controller_create_hosts_file "$2")
+# place in /etc for NATLAN access
+append_to_vm_hostfile "$1" "$new_hosts_file"
+
+}
+########################################
+# SSHs to VM and modifies /etc/hosts
+# param1 : hostname
+# param2 : hostfile addendum heredoc
+########################################
+append_to_vm_hostfile()
+{
+# we want the provided heredoc to expand into this heredoc
+# so it can be sent as is
+ssh "$USER"@"$1" <<EOF | sudo tee /etc/hosts
+$2
+EOF
+
+# prevent changes to dns configuration
+ssh $USER@"$1" <<EOF
+sudo chattr +i /etc/hosts
+EOF
+}
+
 ###############################################
-# returns a heredoc of the controller host file
-# to apply to /etc/hosts on control plane
-# param1 : control_hosts_file
+# returns a heredoc of an addendum to the 
+# controller host file to apply to /etc/hosts 
+# on control plane.
+# We are appending to the original in 
+# /etc/hosts later in the code
+# the controllers must be able to see everything
+# so the workers and controllers are routable
 ###############################################
-both_create_hosts_file()
+controller_create_hosts_file()
 {
 # to be added to controller hosts file
-worker_hosts_addendum=$(cat <<EOF
-$(for i in $(seq $number_of_workers); do
+hosts_addendum=$(cat <<EOF
+$(for i in $(seq $controller_ip_range_start); do
+  echo "192.168.0.$i controller$i"
+done )
+# workers
+$(for i in $(seq $worker_ip_range_start); do
   echo "192.168.0.$i worker$i"
-done
-)
+done )
 EOF
 )
 # append the workers hosts entries to the controller's basic hosts file
-new_hosts_heredoc=append_heredocs "$1" "$worker_hosts_addendum"
-echo "$new_hosts_heredoc"
-}
+# deprecated: I am appending to the hosts file on the VMs directly now
+# as opposed to creating a whole new hosts file and replacing the original
+#new_hosts_heredoc=append_heredocs "$1" "$worker_hosts_addendum"
+#echo "$worker_hosts_addendum"
+#TODO: ask for verification
 
+echo "===================================="
+cecho "[+] New hosts file addendum :" $green
+echo "$hosts_addendum"
+echo "===================================="
 
-#####################################################
-# puts the worker and control plane in the hosts file
-#####################################################
-control_set_hosts(){
-# create the hosts file from supplied parameters at top of script
-new_hosts_file=$(controller_create_hosts_file "$control_hosts_file")
-# place in /etc for NATLAN access
-"$new_hosts_file" | sudo tee /etc/hosts
-# prevent changes to dns configuration
-sudo chattr +i /etc/hosts
-# done! :)
+# ssh to vm and apply new /etc/hosts configuration
+# ONLY IF USING LINUX BAREMETAL HOST OR LINUX MASTER VM
+# DEVELOPMENT IS DONE ON WINDOWS CURRENTLY BECAUSE LINUX
+# CANT HANDLE TWO DISPLAYS ON TWO SEPERATE GPUS WITH A 
+# WACOM TABLET AND I DONT FEEL LIKE RUNNING THREE VMS
+
+if [ $DEBUG == "true" ]; then
+# apply to control vm, while running script FROM that specific VM
+cat << EOF | sudo tee -a /etc/hosts
+$hosts_addendum
+EOF
+else
+both_set_hosts "$1" "$hosts_addendum"
+fi
 }
 
 ###############################################################################
 # returns a heredoc of the worker host file
 # to apply to /etc/hosts on worker node
 # param1 : worker_hosts_file
-###############################################################################
-# REMOVE AFTER TESTS
-###############################################################################
-control_plane_hostname="control"
-worker_hostname="worker"
-
-# 3 for good redundancy
-number_of_controllers=3
-# 192.168.0.2 controller1
-# 192.168.0.3 controller2
-# 192.168.0.4 controller3
-
-number_of_workers=3
-# 192.168.0.5 worker1
-# 192.168.0.6 worker2
-# 192.168.0.7 worker3
-
-# ip to start at 192.168.0.2
-# with three controllers, starting at 2
-# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
-
-worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
-echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
-worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
-echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip"
-
-control_hosts_file=$(cat<<EOF
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  $control_plane_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
-EOF
-)
-#WORKER NODE HOSTS FILE CONFGURATION
+# they must be able to see the controller 
+# but not each other
+# only the controllers are visible
+# that is why there are two seperate functions
 #######################################
-worker_hosts_file=$(cat<<EOF
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  $worker_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
-EOF
-)
-
-###############################################################################
-# REMOVE AFTER TESTS
-###############################################################################
 worker_create_hosts_file()
 {
-echo "starting ip address of worker nodes is 192.168.0.$worker_ip"
-# to be added to worker hosts file
-controller_hosts_addendum=$(cat <<EOF
+hosts_addendum=$(cat <<EOF
 $(
 for i in $(seq $number_of_controllers); do
-  echo "192.168.0.(($i+$worker_ip)) $control_plane_hostname$i"
+  echo "192.168.0.(($i+$controller_ip_range_start)) $control_plane_hostname$i"
 done
-#for i in $(seq $number_of_workers); do
-#  echo "192.168.0.$i $worker_hostname$i"
-#done
 )
 EOF
 )
-# append the workers hosts entries to the controller's basic hosts file
-new_hosts_heredoc=append_heredocs "$1" "$controller_hosts_addendum"
-echo "$new_hosts_heredoc"
+# show results for verification
+#TODO: ask for verification
+echo "===================================="
+cecho "[+] New hosts file addendum :" $green
+echo "$hosts_addendum"
+echo "===================================="
+# ssh to vm and apply new /etc/hosts configuration
+both_set_hosts "$1" "$hosts_addendum"
+
+}
+
+create_KVM()
+{
+echo "wat!?!?! this aint ready yo, baka senpai pleasssseeeeee!!"
 }
 
 ########################################
-worker_set_hosts(){
-# create the hosts file from supplied parameters at top of script
-new_hosts_file=$(controller_create_hosts_file "$control_hosts_file")
-# place in /etc for NATLAN access
-sudo echo $new_hosts_file > /etc/hosts
-# prevent changes to dns configuration
-sudo chattr +i /etc/hosts
-}
-########################################
 # adds internet nameservers
+########################################
 both_set_dns(){
 cat <<EOF | sudo tee /etc/resolv.conf
 domain home
