@@ -17,15 +17,31 @@
 ## | 
 ## | I STRONGLY RECCOMEND YOU USE THIS ON FRESH INSTALLATIONS OF DEBIAN
 ## | 
+## | currently, this script requires 192.168.0.1/24 where the control
+## | plane is 192.168.0.2 and workers are subsequentally sequential numbering
+## | e.g. 
+## |    # workers 
+## |    192.168.0.3 worker1
+## |    192.168.0.4 worker2
+## |    192.168.0.5 worker3
+## |    192.168.0.6 worker4
+## | 
+## | Later revisions will contain multiple control planes, this is POC for me
+## | 
 ## | Commands:
 ## |   -m, --menu             Displays the menu (administration functionality)
 ## |   -h, --help             Displays this help and exists
 ## |   -v, --version          Displays output version and exits
 ## |   -c, --controller       Runs Control flow for controller VM (first step)
 ## |   -w, --worker           Runs Control flow for worker VM (second step)
-## | 
+## |   -l --list_functions    Lists all available functions, manual operations
+## |   
 ## | Examples:
-## |  $PROG --help myscrip-simple.sh > help_text.txt
+## |  $PROG --help > help_text.txt
+## |  $PROG --controller
+## |  $PROG --menu
+## |  $PROG --list_functions (will show all functions in script with info)
+## |  $PROG --<function name> (will run that specific named function)
 ## | 
 ## | stackoverflow.com: 
 ## | questions/14786984/best-way-to-parse-command-line-args-in-bash
@@ -81,7 +97,17 @@ SELF=$(realpath "$0")
 # IMPORTANT VARIABLES
 ###############################################################################
 # version used at release of this script
+# necessary for building cri-dockerd
+# also good for creating various scripts
 current_go_version="1.19.4"
+
+# packages for functionality
+# each set will need to be installed in its own step, I dont want to encounter
+# any side effects of downloading them all at once, if any exist
+admin_required_packages="git tmux apt-transport-https ca-certificates curl gnupg lsb-release ufw xxd wget curl netcat python3 python3-pip"
+kvm_required_packages="qemu-kvm libvirt-bin virtinst bridge-utils cpu-checker"
+kubernetes_required_packages=" "
+docker_required_packages=""
 
 # sets location for backups of configs and various files
 home_dir="/home/$USER"
@@ -92,6 +118,19 @@ ssh_config_temp="/etc/ssh/sshd_config.tmp"
 ssh_key_location="$home_dir/.ssh/"
 ssh_authorized_key_location="/home/$USER/.ssh/authorized_keys"
 
+########################################
+# organizationl configuration
+########################################
+control_plane_hostname="control"
+worker_hostname="worker"
+
+# 3 for good redundancy
+number_of_controllers=3
+number_of_workers=3
+
+# ip range to start worker addresses
+worker_ip_range_start=$((number_of_controllers + number_of_workers))
+
 ###############################################################################
 # NETWORK MAPPING
 # HOSTNAME AND IP ADDRESSES
@@ -99,8 +138,12 @@ ssh_authorized_key_location="/home/$USER/.ssh/authorized_keys"
 # this must reflect the setup of your network, this gets added to hosts file
 
 #CONTROL PLANE HOSTS FILE CONFGURATION
-###############################################################################
-control_plane_hostname="control"
+# the heredoc will be populated with the same number of hosts as defined in 
+# number_of_workers:int
+# resulting in the format: 192.168.0.x worker:int
+#######################################
+
+# todo: add number of controllers
 control_hosts_file=$(cat<<EOF
 # Host addresses 
 127.0.0.1  localhost
@@ -110,20 +153,18 @@ ff02::1    ip6-allnodes
 ff02::2    ip6-allrouters
 EOF
 )
-# to preserve newlines you must DOUBLE 
-# quote the variable as it echos
-#echo "$hosts_file"
-control_extra_hosts=$(cat<<EOF
-# workers 
-192.168.0.3 worker1
-192.168.0.4 worker2
-192.168.0.5 worker3
-192.168.0.6 worker4
-EOF
-)
 
 #WORKER NODE HOSTS FILE CONFGURATION
-###############################################################################
+#######################################
+worker_hosts_file=$(cat<<EOF
+# Host addresses 
+127.0.0.1  localhost
+127.0.1.1  worker_hostname
+::1        localhost ip6-localhost ip6-loopback
+ff02::1    ip6-allnodes
+ff02::2    ip6-allrouters
+EOF
+)
 
 
 #echo "$extra_hosts"
@@ -177,6 +218,16 @@ done
 }
 ########################################
 # combining heredocs
+# usage:
+# hosts_file=$(cat <<EOF 
+# 127.0.0.1 hostname
+# EOF
+# )
+# extra_hosts=$(cat <<EOF
+# 192.168.0.3 worker
+# EOF
+# )
+# append_heredocs "$hosts_file" "$extra_hosts"
 ########################################
 append_heredocs() {
 # Set the input and output heredocs
@@ -189,37 +240,80 @@ HERE
 )
 echo "$output"
 }
-append_heredocs "$hosts_file" "$extra_hosts"
+
+
+create_KVM()
+{
+echo "wat"
+}
+
 ###############################################################################
 # NETWORKING CONFIGURATION
 ###############################################################################
-# puts the worker and control plane in the hosts file
-control_set_hosts(){
-cat <<EOF | sudo tee /etc/hosts
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  $control_plane_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
 
-$worker_node_ip $worker_node_hostname
+###############################################
+# returns a heredoc of the controller host file
+# to apply to /etc/hosts on control plane
+# param1 : control_hosts_file
+###############################################
+controller_create_hosts_file()
+{
+# to be added to controller hosts file
+worker_hosts_addendum=$(cat <<EOF
+$(for i in $(seq $number_of_workers); do
+  echo "192.168.0.$i worker$i"
+done
+)
 EOF
+)
+# append the workers hosts entries to the controller's basic hosts file
+new_hosts_heredoc=append_heredocs "$1" "$worker_hosts_addendum"
+echo "$new_hosts_heredoc"
+}
+
+#####################################################
+# puts the worker and control plane in the hosts file
+#####################################################
+control_set_hosts(){
+# create the hosts file from supplied parameters at top of script
+new_hosts_file=$(controller_create_hosts_file "$control_hosts_file")
+# place in /etc for NATLAN access
+sudo echo $new_hosts_file > /etc/hosts
 # prevent changes to dns configuration
 sudo chattr +i /etc/hosts
+# done! :)
 }
+
+###############################################################################
+# returns a heredoc of the worker host file
+# to apply to /etc/hosts on worker node
+# param1 : worker_hosts_file
+worker_create_hosts_file()
+{
+worker_ip=$worker_ip_range_start
+# to be added to controller hosts file
+controller_hosts_addendum=$(cat <<EOF
+$(
+for i in $(seq $number_of_controllers); do
+  echo "192.168.0.$i $control_plane_hostname$i"
+done
+for i in $(seq $number_of_workers); do
+  echo "192.168.0.$i $worker_hostname$i"
+done
+)
+EOF
+)
+# append the workers hosts entries to the controller's basic hosts file
+new_hosts_heredoc=append_heredocs "$1" "$controller_hosts_addendum"
+echo "$new_hosts_heredoc"
+}
+
 ########################################
 worker_set_hosts(){
-cat <<EOF | sudo tee /etc/hosts
-# Host addresses 
-127.0.0.1  localhost
-127.0.1.1  $worker_node_hostname
-::1        localhost ip6-localhost ip6-loopback
-ff02::1    ip6-allnodes
-ff02::2    ip6-allrouters
-
-$control_plane_ip $control_plane_hostname
-EOF
+# create the hosts file from supplied parameters at top of script
+new_hosts_file=$(controller_create_hosts_file "$control_hosts_file")
+# place in /etc for NATLAN access
+sudo echo $new_hosts_file > /etc/hosts
 # prevent changes to dns configuration
 sudo chattr +i /etc/hosts
 }
@@ -452,8 +546,7 @@ sudo systemctl enable --now cri-docker.socket
 # both_install_cri_dockerd
 both_install_tooling()
 {
-packages="python3 python3-pip git tmux apt-transport-https ca-certificates curl gnupg lsb-release ufw xxd wget curl netcat"
-sudo apt-get install -y "${packages}"
+sudo apt-get install -y "$kubernetes_packages"
 
 # the container runtime
 both_install_docker_debian
