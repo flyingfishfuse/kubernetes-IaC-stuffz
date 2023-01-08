@@ -34,7 +34,9 @@
 ## |   -v, --version          Displays output version and exits
 ## |   -c, --controller       Runs Control flow for controller VM (first step)
 ## |   -w, --worker           Runs Control flow for worker VM (second step)
-## |   -l --list_functions    Lists all available functions, manual operations
+## |   -l, --list_functions   Lists all available functions, manual operations
+## |   -t, --test             Runs in TEST mode, writes to files in hierarchy 
+## |                          of folders
 ## |   
 ## | Examples:
 ## |  $PROG --help > help_text.txt
@@ -54,6 +56,9 @@ die() { echo "$@" >&2; exit 2; }
 # shows menu if requested
 menu(){
   MENU=1
+}
+test(){
+TEST=1
 }
 log_info() {
   LOG=info
@@ -191,14 +196,6 @@ echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
 #)
 # DEPRECATED ######## END
 
-#######################################
-# Appeands the host entries to the 
-# given VM, use this after copying keys
-# to worker VMs
-# param1 : worker hostname to ssh to
-# param2 : heredoc for "sudo tee /etc/hosts"
-# Example : append_to_vm_hostfile "worker1" "$new_hosts_addendum"
-#######################################
 ########################################
 #      Color echo
 ########################################
@@ -253,10 +250,13 @@ check_if_virt
 # NETWORKING CONFIGURATION
 ###############################################################################
 
-########################################
-# SSHs to VM and modifies /etc/hosts
-# param1 : hostname
-# param2 : hostfile addendum heredoc
+#######################################
+# Appends the host entries to the 
+# given hostname, use this after copying keys
+# to worker VMs
+# param1 : worker hostname to ssh to
+# param2 : hostfile addendum heredoc for "sudo tee /etc/hosts"
+# Example : append_to_vm_hostfile "worker1" "$new_hosts_addendum"
 ########################################
 append_to_vm_hostfile()
 {
@@ -324,7 +324,7 @@ echo "===================================="
 # ssh to vm and apply new /etc/hosts configuration
 # ONLY IF USING LINUX BAREMETAL HOST OR LINUX MASTER VM
 # DEVELOPMENT IS DONE ON WINDOWS CURRENTLY BECAUSE LINUX
-# CANT HANDLE TWO DISPLAYS ON TWO SEPERATE GPUS WITH A 
+# CANT HANDLE TWO DISPLAYS ON TWO SEPERATE NVIDIA GPUS WITH A 
 # WACOM TABLET AND I DONT FEEL LIKE RUNNING THREE VMS
 
 if [ $VIRTUALIZED == "true" ]; then
@@ -438,37 +438,42 @@ sudo chattr +i /etc/resolv.conf
 control_plane_hostname="control"
 worker_hostname="worker"
 
-# 3 for good redundancy
 number_of_controllers=3
-# ip to start at 192.168.0.2 to allow for 192.168.0.1 to be router/ingress
-# 192.168.0.2 controller1
-# 192.168.0.3 controller2
-# 192.168.0.4 controller3
-# plus one for the indexing of ip ranging, plus one for the router/ingress
 controller_ip_range_start=$((1 + 1))
 echo "[+] starting ip address of controller nodes is 192.168.0.$controller_ip_range_start"
 controller_ip_range_end=$((number_of_controllers + 1))
 echo "[+] controller ip range end is 192.168.0.$controller_ip_range_end"
 
 number_of_workers=3
-# 192.168.0.5 worker1
-# 192.168.0.6 worker2
-# 192.168.0.7 worker3
-# with three controllers, starting at 2
-# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
-# plus one for the indexing of ip ranging, plus 1 for the last controller
 worker_ip_range_start=$((number_of_controllers + 2))
 echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip_range_start"
 worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
 echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
-#worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
-# ip range to start worker addresses
+
 
 for i in $(seq $number_of_controllers)
 do 
+  # make sequential hostname
   hostname="${control_plane_hostname}${i}"
   echo $hostname
-   #control_set_hosts $hostname
+  # keep this when done testing
+  #control_set_hosts $hostname
+  # create line entry
+  hosts_addendum=$(cat <<EOF
+  $(for h in $(seq $controller_ip_range_start); do
+    echo "192.168.0.$h controller$h" 
+  done )
+  # workers
+  $(for h in $(seq $worker_ip_range_start); do
+    echo "192.168.0.$h worker$h"
+  done )
+EOF
+  )
+  echo "===================================="
+  cecho "[+] New hosts file addendum :" $green
+  cecho "[+] Host being modified : $1" $green
+  echo "$hosts_addendum"
+  echo "===================================="
 done
 ###############################################################################
 # remove when tests complete
@@ -1016,4 +1021,11 @@ if [ "$MENU" == 1 ]; then
   do
     show_menus
   done
+fi
+
+
+#TODO: build the test
+# write to files in hierarchy representing the network structure
+if [ $TEST == 1 ]; then
+echo "testing"
 fi
