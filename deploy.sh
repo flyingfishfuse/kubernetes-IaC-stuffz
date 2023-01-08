@@ -46,7 +46,8 @@
 ## | stackoverflow.com: 
 ## | questions/14786984/best-way-to-parse-command-line-args-in-bash
 ## |-- END MESSAGE -- ////#####################################################
-
+# behavior selector
+DEBUG="true"
 PROG=${0##*/}
 LOG=info
 die() { echo "$@" >&2; exit 2; }
@@ -220,23 +221,38 @@ cecho ()
   tput sgr0 #Reset # Reset to normal.
 } 
 
+########################################
+# checks if this script is being run on baremetal
+# sets VIRTUALIZED=1 if 
+########################################
+check_if_virt()
+{
+cecho "[+] checking if currently running inside of virtualbox or qemu"
+# first method
+if sudo dmidecode -s system-product-name | grep -q "VirtualBox"; then
+VIRTUALIZED=1
+fi
+# second method
+if sudo dmesg | grep -q "Hypervisor detected";then
+VIRTUALIZED=1
+fi
+# third method
+if hostnamectl status | grep -q "Chassis: vm" \| "Virtualization: kvm"; then
+VIRTUALIZED=1
+fi
+if systemd-detect-virt | grep -q "oracle " \| "KVM"; then
+VIRTUALIZED=1
+fi
+if [ $VIRTUALIZED == 1 ] ; then
+cecho "[+] Script is running inside a VM"
+fi
+}
+check_if_virt
 
 ###############################################################################
 # NETWORKING CONFIGURATION
 ###############################################################################
 
-########################################
-# sets hosts file
-# param1 : hostname
-# param2 : $hosts_file_addendum
-########################################
-both_set_hosts(){
-# create the hosts file from supplied parameters at top of script
-new_hosts_file=$(controller_create_hosts_file "$2")
-# place in /etc for NATLAN access
-append_to_vm_hostfile "$1" "$new_hosts_file"
-
-}
 ########################################
 # SSHs to VM and modifies /etc/hosts
 # param1 : hostname
@@ -255,6 +271,18 @@ ssh $USER@"$1" <<EOF
 sudo chattr +i /etc/hosts
 EOF
 }
+########################################
+# sets hosts file
+# param1 : hostname
+# param2 : $hosts_file_addendum
+########################################
+both_set_hosts(){
+# create the hosts file from supplied parameters at top of script
+new_hosts_file=$(controller_create_hosts_file "$2")
+# place in /etc for NATLAN access
+append_to_vm_hostfile "$1" "$new_hosts_file"
+
+}
 
 ###############################################
 # returns a heredoc of an addendum to the 
@@ -264,6 +292,8 @@ EOF
 # /etc/hosts later in the code
 # the controllers must be able to see everything
 # so the workers and controllers are routable
+#
+# param1: hostname to apply file to
 ###############################################
 controller_create_hosts_file()
 {
@@ -287,6 +317,7 @@ EOF
 
 echo "===================================="
 cecho "[+] New hosts file addendum :" $green
+cecho "[+] Host being modified : $1" $green
 echo "$hosts_addendum"
 echo "===================================="
 
@@ -296,20 +327,24 @@ echo "===================================="
 # CANT HANDLE TWO DISPLAYS ON TWO SEPERATE GPUS WITH A 
 # WACOM TABLET AND I DONT FEEL LIKE RUNNING THREE VMS
 
-if [ $DEBUG == "true" ]; then
+if [ $VIRTUALIZED == "true" ]; then
 # apply to control vm, while running script FROM that specific VM
 cat << EOF | sudo tee -a /etc/hosts
 $hosts_addendum
 EOF
 else
-both_set_hosts "$1" "$hosts_addendum"
+# apply to remote host over ssh if not being run from
+# a vm
+# deprecated
+#both_set_hosts "$1" "$hosts_addendum"
+append_to_vm_hostfile "$1" "$new_hosts_file"
 fi
 }
 
 ###############################################################################
 # returns a heredoc of the worker host file
 # to apply to /etc/hosts on worker node
-# param1 : worker_hosts_file
+# param1 : worker hostname
 # they must be able to see the controller 
 # but not each other
 # only the controllers are visible
@@ -328,24 +363,61 @@ EOF
 # show results for verification
 #TODO: ask for verification
 echo "===================================="
-cecho "[+] New hosts file addendum :" $green
+cecho "[+] New hosts file addendum " $green
+cecho "[+] Host being modified : $1" $green
 echo "$hosts_addendum"
 echo "===================================="
 # ssh to vm and apply new /etc/hosts configuration
-both_set_hosts "$1" "$hosts_addendum"
+append_to_vm_hostfile "$1" "$hosts_addendum"
 
 }
 
-create_KVM()
+prepare_for_KVM()
 {
 echo "wat!?!?! this aint ready yo, baka senpai pleasssseeeeee!!"
+
+# determine if intel or AMD
+cat /proc/cpuinfo | grep kvm\|svm
+
+# determine if modules loaded
+lsmod | grep kvm
+
+# for intel
+# load modules if unloaded
+modprobe kvm_intel
+
+# enable libvirtd daemon
+systemctl enable --now libvirtd
+}
+
+create_VM()
+{
+# once libvirtd service is started, we can use the virt-install command to setup
+# The following linux command must be executed as root 
+# to run as normal user you must be a member of the kvm group:
+VM_name="linuxconfig-vm"
+install_media="/home/$USER/Downloads/debian-9.0.0-amd64-netinst.iso"
+memory=1024
+vcpus=2
+disk_size=5
+os_variant="debian8"
+
+virt-install --name=$VM_name \
+--vcpus=$vcpus \
+--memory=$memory \
+--cdrom=$install_media \
+--disk size=$disk_size \
+--os-variant=$os_variant
+
 }
 
 ########################################
 # adds internet nameservers
+#param1: hostname to apply changes to
 ########################################
-both_set_dns(){
-cat <<EOF | sudo tee /etc/resolv.conf
+set_dns(){
+#cat <<EOF | sudo tee /etc/resolv.conf
+sudo ssh $USER@$1 <<EOF | sudo tee /etc/resolv.conf
 domain home
 search home
 nameserver 192.168.254.254
@@ -358,11 +430,64 @@ EOF
 # prevent changes to dns configuration
 sudo chattr +i /etc/resolv.conf
 }
+
+
+###############################################################################
+# remove when tests complete
+###############################################################################
+control_plane_hostname="control"
+worker_hostname="worker"
+
+# 3 for good redundancy
+number_of_controllers=3
+# ip to start at 192.168.0.2 to allow for 192.168.0.1 to be router/ingress
+# 192.168.0.2 controller1
+# 192.168.0.3 controller2
+# 192.168.0.4 controller3
+# plus one for the indexing of ip ranging, plus one for the router/ingress
+controller_ip_range_start=$((1 + 1))
+echo "[+] starting ip address of controller nodes is 192.168.0.$controller_ip_range_start"
+controller_ip_range_end=$((number_of_controllers + 1))
+echo "[+] controller ip range end is 192.168.0.$controller_ip_range_end"
+
+number_of_workers=3
+# 192.168.0.5 worker1
+# 192.168.0.6 worker2
+# 192.168.0.7 worker3
+# with three controllers, starting at 2
+# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
+# plus one for the indexing of ip ranging, plus 1 for the last controller
+worker_ip_range_start=$((number_of_controllers + 2))
+echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip_range_start"
+worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
+echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
+#worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
+# ip range to start worker addresses
+
+for i in $(seq $number_of_controllers)
+do 
+  hostname="${control_plane_hostname}${i}"
+  echo $hostname
+   #control_set_hosts $hostname
+done
+###############################################################################
+# remove when tests complete
+###############################################################################
+
 ########################################
 #sets up network configuration to establish access
 control_establish_network(){
-both_set_dns
-control_set_hosts
+# set dns on control planes
+for i in $(seq $number_of_controllers)
+do 
+  hostname="${control_plane_hostname}${i}"
+  echo $hostname
+  # ssh to indicated hostname and apply /etc/hosts heredoc addundum
+  # control_set_hosts $hostname
+  # ssh to indicated hostname and apply resove.conf heredoc
+  # set_dns $hostname
+done
+
 }
 ########################################
 #sets up network configuration to establish access
@@ -370,8 +495,15 @@ control_set_hosts
 # worker_set_hosts
 worker_establish_network()
 {
-both_set_dns
-worker_set_hosts
+for i in $(seq $number_of_controllers)
+do 
+  hostname="${control_plane_hostname}${i}"
+  echo $hostname
+  # ssh to indicated hostname and apply /etc/hosts heredoc addundum
+  # worker_set_hosts $hostname
+  # ssh to indicated hostname and apply resove.conf heredoc
+  # set_dns $hostname
+done
 }
 
 # stop sleep modes
