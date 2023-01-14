@@ -49,7 +49,6 @@
 ## | questions/14786984/best-way-to-parse-command-line-args-in-bash
 ## |-- END MESSAGE -- ////#####################################################
 # behavior selector
-DEBUG="true"
 PROG=${0##*/}
 LOG=info
 die() { echo "$@" >&2; exit 2; }
@@ -102,28 +101,80 @@ SELF=$(realpath "$0")
 ###############################################################################
 # IMPORTANT VARIABLES
 ###############################################################################
-# version used at release of this script
-# necessary for building cri-dockerd
-# also good for creating various scripts
-current_go_version="1.19.4"
+# controller data
+number_of_controllers=3
+# worker data
+number_of_workers=3
+control_plane_hostname="control"
+worker_hostname="worker"
 
-# packages for functionality
-# each set will need to be installed in its own step, I dont want to encounter
-# any side effects of downloading them all at once, if any exist
-admin_required_packages="git tmux apt-transport-https ca-certificates curl gnupg lsb-release ufw xxd wget curl netcat python3 python3-pip"
-kvm_required_packages="qemu-kvm libvirt-bin virtinst bridge-utils cpu-checker"
-kubernetes_required_packages=" "
-docker_required_packages=""
-
-
-# sets location for backups of configs and various files
-home_dir="/home/$USER"
 backups_location="$home_dir/Desktop/backups"
 mkdir "$backups_location"
+
+############################
+# get sudo password
+############################
+get_password()
+{
+read -s -p "[+] Enter Password for sudo: " sudoPW
+echo "[+] password to be used for sudo operations: $sudoPW"
+}
+get_password
+##########################################################
+# SOFTWARE
+##########################################################
+# each set will need to be installed in its own step, I dont want to encounter
+# any side effects of downloading them all at once, if any exist
+admin_required_packages="git tmux apt-transport-https ca-certificates curl \
+gnupg lsb-release wget curl netcat python3 python3-pip dnsmasq\
+genisoimage binutils debootstrap syslinux squashfs-tools"
+kvm_required_packages="qemu-kvm libvirt-bin virtinst bridge-utils cpu-checker"
+kubernetes_required_packages=" "
+docker_required_packages="docker containerd docker.io"
+# version used at release of this script
+# necessary for building cri-dockerd
+# also good for creating various softwares for administration
+current_go_version="1.19.4"
+
+##########################################################
+# CONFIG/BACKUP/LISTS LOCATIONS
+##########################################################
+# sets location for backups of configs and various files
+home_dir="/home/$USER"
+# ssh file locations
 ssh_config="/etc/ssh/sshd_config"
 ssh_config_temp="/etc/ssh/sshd_config.tmp"
-ssh_key_location="$home_dir/.ssh/"
+# location of ssh RSA keys
+ssh_key_location="$home_dir/.ssh"
 ssh_authorized_key_location="/home/$USER/.ssh/authorized_keys"
+# list of worker node hostnames
+worker_hostlist=/home/$USER/worker_hostlist
+new_worker_hostfile=/home/$USER/new_controller_hostfile
+# list of controller node hostnames
+controller_hostlist=/home/$USER/controller_hostlist
+new_controller_hostfile=/home/$USER/new_controller_hostfile
+# need a mappinf of everything in a central list
+list_of_all_hosts=/home/$USER/master_hostlist
+
+##########################################################
+# PXEBOOT AND ISO BUILDER VARIABLES
+##########################################################
+# for the creation of the PXEboot image
+iso_build_folder="$home_dir/Desktop/iso_build_folder"
+ARCH='amd64'
+COMPONENTS='main,contrib'
+REPOSITORY="http://deb.debian.org/debian/"
+
+
+###############################################################################
+##  SECURITY AND SSH CONFIGURATION   ##
+#######################################
+# mega important password!!!!
+password="password"
+# DO NOT KEEP THIS PASSWORD! ADD YOUR OWN UNIQUE PASSWORD AND RUN THE COMMAND
+# CHANGE_PASSWORD_ON_WORKERS <NEW_PASSWORD>
+# TODO: create the above named function and add to menu
+###############################################################################
 
 ###############################################################################
 # NETWORK MAPPING
@@ -131,70 +182,15 @@ ssh_authorized_key_location="/home/$USER/.ssh/authorized_keys"
 ###############################################################################
 # this must reflect the setup of your network, this gets added to hosts file
 
-########################################
-# organizationl configuration
-########################################
-control_plane_hostname="control"
-worker_hostname="worker"
-
-# 3 for good redundancy
-number_of_controllers=3
-# ip to start at 192.168.0.2 to allow for 192.168.0.1 to be router/ingress
-# 192.168.0.2 controller1
-# 192.168.0.3 controller2
-# 192.168.0.4 controller3
-# plus one for the indexing of ip ranging, plus one for the router/ingress
 controller_ip_range_start=$((1 + 1))
 echo "[+] starting ip address of controller nodes is 192.168.0.$controller_ip_range_start"
 controller_ip_range_end=$((number_of_controllers + 1))
 echo "[+] controller ip range end is 192.168.0.$controller_ip_range_end"
 
-number_of_workers=3
-# 192.168.0.5 worker1
-# 192.168.0.6 worker2
-# 192.168.0.7 worker3
-# with three controllers, starting at 2
-# it should be 3(2,3,4) + 3(5,6,7) - 3(7,6,5) == 5
-# plus one for the indexing of ip ranging, plus 1 for the last controller
 worker_ip_range_start=$((number_of_controllers + 2))
 echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip_range_start"
 worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
 echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
-#worker_ip=$(($worker_ip_range_end-$number_of_controllers + 1))
-# ip range to start worker addresses
-
-
-# DEPRECATED ######## BEGIN
-#
-#CONTROL PLANE HOSTS FILE CONFGURATION
-# the heredoc will be populated with the same number of hosts as defined in 
-# number_of_workers:int
-# resulting in the format: 192.168.0.x worker:int
-#######################################
-
-# todo: add number of controllers
-#control_hosts_file=$(cat<<EOF
-## Host addresses 
-#127.0.0.1  localhost
-#127.0.1.1  $control_plane_hostname
-#::1        localhost ip6-localhost ip6-loopback
-#ff02::1    ip6-allnodes
-#ff02::2    ip6-allrouters
-#EOF
-#)
-#
-##WORKER NODE HOSTS FILE CONFGURATION
-########################################
-#worker_hosts_file=$(cat<<EOF
-## Host addresses 
-#127.0.0.1  localhost
-#127.0.1.1  $worker_hostname
-#::1        localhost ip6-localhost ip6-loopback
-#ff02::1    ip6-allnodes
-#ff02::2    ip6-allrouters
-#EOF
-#)
-# DEPRECATED ######## END
 
 ########################################
 #      Color echo
@@ -246,132 +242,6 @@ fi
 }
 check_if_virt
 
-###############################################################################
-# NETWORKING CONFIGURATION
-###############################################################################
-
-#######################################
-# Appends the host entries to the 
-# given hostname, use this after copying keys
-# to worker VMs
-# param1 : worker hostname to ssh to
-# param2 : hostfile addendum heredoc for "sudo tee /etc/hosts"
-# Example : append_to_vm_hostfile "worker1" "$new_hosts_addendum"
-########################################
-append_to_vm_hostfile()
-{
-# we want the provided heredoc to expand into this heredoc
-# so it can be sent as is
-ssh "$USER"@"$1" <<EOF | sudo tee /etc/hosts
-$2
-EOF
-
-# prevent changes to dns configuration
-ssh $USER@"$1" <<EOF
-sudo chattr +i /etc/hosts
-EOF
-}
-########################################
-# sets hosts file
-# param1 : hostname
-# param2 : $hosts_file_addendum
-########################################
-both_set_hosts(){
-# create the hosts file from supplied parameters at top of script
-new_hosts_file=$(controller_create_hosts_file "$2")
-# place in /etc for NATLAN access
-append_to_vm_hostfile "$1" "$new_hosts_file"
-
-}
-
-###############################################
-# returns a heredoc of an addendum to the 
-# controller host file to apply to /etc/hosts 
-# on control plane.
-# We are appending to the original in 
-# /etc/hosts later in the code
-# the controllers must be able to see everything
-# so the workers and controllers are routable
-#
-# param1: hostname to apply file to
-###############################################
-controller_create_hosts_file()
-{
-# to be added to controller hosts file
-hosts_addendum=$(cat <<EOF
-$(for i in $(seq $controller_ip_range_start); do
-  echo "192.168.0.$i controller$i"
-done )
-# workers
-$(for i in $(seq $worker_ip_range_start); do
-  echo "192.168.0.$i worker$i"
-done )
-EOF
-)
-# append the workers hosts entries to the controller's basic hosts file
-# deprecated: I am appending to the hosts file on the VMs directly now
-# as opposed to creating a whole new hosts file and replacing the original
-#new_hosts_heredoc=append_heredocs "$1" "$worker_hosts_addendum"
-#echo "$worker_hosts_addendum"
-#TODO: ask for verification
-
-echo "===================================="
-cecho "[+] New hosts file addendum :" $green
-cecho "[+] Host being modified : $1" $green
-echo "$hosts_addendum"
-echo "===================================="
-
-# ssh to vm and apply new /etc/hosts configuration
-# ONLY IF USING LINUX BAREMETAL HOST OR LINUX MASTER VM
-# DEVELOPMENT IS DONE ON WINDOWS CURRENTLY BECAUSE LINUX
-# CANT HANDLE TWO DISPLAYS ON TWO SEPERATE NVIDIA GPUS WITH A 
-# WACOM TABLET AND I DONT FEEL LIKE RUNNING THREE VMS
-
-if [ $VIRTUALIZED == "true" ]; then
-# apply to control vm, while running script FROM that specific VM
-cat << EOF | sudo tee -a /etc/hosts
-$hosts_addendum
-EOF
-else
-# apply to remote host over ssh if not being run from
-# a vm
-# deprecated
-#both_set_hosts "$1" "$hosts_addendum"
-append_to_vm_hostfile "$1" "$new_hosts_file"
-fi
-}
-
-###############################################################################
-# returns a heredoc of the worker host file
-# to apply to /etc/hosts on worker node
-# param1 : worker hostname
-# they must be able to see the controller 
-# but not each other
-# only the controllers are visible
-# that is why there are two seperate functions
-#######################################
-worker_create_hosts_file()
-{
-hosts_addendum=$(cat <<EOF
-$(
-for i in $(seq $number_of_controllers); do
-  echo "192.168.0.(($i+$controller_ip_range_start)) $control_plane_hostname$i"
-done
-)
-EOF
-)
-# show results for verification
-#TODO: ask for verification
-echo "===================================="
-cecho "[+] New hosts file addendum " $green
-cecho "[+] Host being modified : $1" $green
-echo "$hosts_addendum"
-echo "===================================="
-# ssh to vm and apply new /etc/hosts configuration
-append_to_vm_hostfile "$1" "$hosts_addendum"
-
-}
-
 prepare_for_KVM()
 {
 echo "wat!?!?! this aint ready yo, baka senpai pleasssseeeeee!!"
@@ -411,111 +281,6 @@ virt-install --name=$VM_name \
 
 }
 
-########################################
-# adds internet nameservers
-#param1: hostname to apply changes to
-########################################
-set_dns(){
-#cat <<EOF | sudo tee /etc/resolv.conf
-sudo ssh $USER@$1 <<EOF | sudo tee /etc/resolv.conf
-domain home
-search home
-nameserver 192.168.254.254
-
-nameserver 1.1.1.1
-nameserver 1.0.0.1
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-EOF
-# prevent changes to dns configuration
-sudo chattr +i /etc/resolv.conf
-}
-
-
-###############################################################################
-# remove when tests complete
-###############################################################################
-control_plane_hostname="control"
-worker_hostname="worker"
-
-number_of_controllers=3
-controller_ip_range_start=$((1 + 1))
-echo "[+] starting ip address of controller nodes is 192.168.0.$controller_ip_range_start"
-controller_ip_range_end=$((number_of_controllers + 1))
-echo "[+] controller ip range end is 192.168.0.$controller_ip_range_end"
-
-number_of_workers=3
-worker_ip_range_start=$((number_of_controllers + 2))
-echo "[+] starting ip address of worker nodes is 192.168.0.$worker_ip_range_start"
-worker_ip_range_end=$((number_of_controllers + number_of_workers + 1)) 
-echo "[+] worker ip range end is 192.168.0.$worker_ip_range_end"
-
-
-for i in $(seq $number_of_controllers)
-do 
-  # make sequential hostname
-  hostname="${control_plane_hostname}${i}"
-  echo $hostname
-  # keep this when done testing
-  #control_set_hosts $hostname
-  # create line entry
-  hosts_addendum=$(cat <<EOF
-  $(for h in $(seq $controller_ip_range_start); do
-    echo "192.168.0.$h controller$h" 
-  done )
-  # workers
-  $(for h in $(seq $worker_ip_range_start); do
-    echo "192.168.0.$h worker$h"
-  done )
-EOF
-  )
-  echo "===================================="
-  cecho "[+] New hosts file addendum :" $green
-  cecho "[+] Host being modified : $1" $green
-  echo "$hosts_addendum"
-  echo "===================================="
-done
-###############################################################################
-# remove when tests complete
-###############################################################################
-
-########################################
-#sets up network configuration to establish access
-control_establish_network(){
-# set dns on control planes
-for i in $(seq $number_of_controllers)
-do 
-  hostname="${control_plane_hostname}${i}"
-  echo $hostname
-  # ssh to indicated hostname and apply /etc/hosts heredoc addundum
-  # control_set_hosts $hostname
-  # ssh to indicated hostname and apply resove.conf heredoc
-  # set_dns $hostname
-done
-
-}
-########################################
-#sets up network configuration to establish access
-# both_set_dns
-# worker_set_hosts
-worker_establish_network()
-{
-for i in $(seq $number_of_controllers)
-do 
-  hostname="${control_plane_hostname}${i}"
-  echo $hostname
-  # ssh to indicated hostname and apply /etc/hosts heredoc addundum
-  # worker_set_hosts $hostname
-  # ssh to indicated hostname and apply resove.conf heredoc
-  # set_dns $hostname
-done
-}
-
-# stop sleep modes
-both_stop_sleep()
-{
-sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
-}
 
 ###############################################################################
 # SSH
@@ -651,6 +416,165 @@ ls -la /home/$USER/.ssh/
 exit
 EOF
 }
+
+###############################################################################
+# NETWORKING CONFIGURATION
+# Prepares and applies resolve.conf and hosts files for/to both control planes
+# and worker nodes
+#
+# we need both controllers and workers in the hosts file for the controllers
+# but only the controllers in the hostsfile for the workers
+###############################################################################
+
+########################################
+# adds internet nameservers
+# gives workers and controllers access
+# to the outside via DNS
+#param1: hostname to apply changes to
+########################################
+set_dns(){
+#cat <<EOF | sudo tee /etc/resolv.conf
+sudo ssh $USER@$1 <<EOF | sudo tee /etc/resolv.conf
+domain home
+search home
+nameserver 192.168.254.254
+
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+EOF
+# prevent changes to dns configuration
+sudo chattr +i /etc/resolv.conf
+}
+
+#######################################
+# Generate host file that resides on controllers
+# adds controller and worker hostnames to file
+#######################################
+generate_controller_hosts_file()
+{
+# create controller line entries
+for h in $(seq $number_of_controllers); do
+  # add to hostfile addendum
+  echo "192.168.0.$((1 + h )) $control_plane_hostname$h" >> "$new_controller_hostfile"
+  echo $control_plane_hostname$h >> $controller_hostlist
+done
+# create worker line entries
+for h in $(seq $number_of_workers); do
+  # add to hostfile addendum
+  echo "192.168.0.$((1 + h )) $worker_hostname$h" >> "$new_controller_hostfile"
+  echo $worker_hostname$h >> $worker_hostlist
+done
+# print entries for verification and logging
+echo "===================================="
+cecho "[+] New worker hosts file addendum :" $green
+cat "$new_controller_hostfile"
+echo "===================================="
+}
+
+#######################################
+# Generate host file to reside on workers
+#######################################
+generate_worker_hosts_file()
+{
+# create line entries
+for h in $(seq $number_of_controllers); do
+  echo "192.168.0.$((1 + h )) $control_plane_hostname$h" >> "$new_worker_hostfile"
+done
+# print entries for verification and logging
+echo "===================================="
+cecho "[+] New worker hosts file addendum :" $green
+cat "$new_worker_hostfile"
+echo "===================================="
+}
+
+#######################################
+# ssh into controller and concatenate 
+# the new entries into the hosts file
+# param1: hostname to apply config to
+# param2: path to config addendum
+#######################################
+ssh_apply_hostfile()
+{
+ssh "$USER"@"$1" <<EOF | sudo tee /etc/hosts
+$2
+EOF
+}
+#######################################
+# prevent changes to dns and hosts 
+# configuration
+# param1: hostname to lock configs on
+#######################################
+ssh_lock_configs()
+{
+ssh "$USER"@"$1" <<EOF
+sudo chattr +i /etc/hosts
+sudo chattr +i /etc/resolv.conf
+EOF
+}
+
+#######################################
+# issues a command to remote via ssh
+# param1: hostname to issue command to
+# param2: command
+#######################################
+ssh_one_shot_command()
+{
+ssh $USER@"$1" "$(typeset -f $2); $2"
+}
+
+#######################################
+# sudo -S but without the -S
+# made for readability reason
+# param1: the command to sudo while piping the password
+#######################################
+sudos()
+{
+(echo $password) | sudo -S -p "" "$1"
+}
+
+
+apply_hostfile_config()
+{
+
+# creates controller and worker hostlists and hostfiles for the controllers
+generate_controller_hosts_file
+# read hostnames from generated file
+while IFS= read -r hostname
+do
+  # apply hostfile to controller nodes via ssh
+  ssh_apply_hostfile "$hostname" "$new_controller_hostfile"
+  # configure resolv.conf via ssh
+  set_dns "$hostname"
+  # lock all configs
+  ssh_lock_configs "$hostname"
+done < "$controller_hostlist"
+
+# creates hostfiles for worker nodes
+generate_worker_hosts_file
+# read hostnames from generated file
+while IFS= read -r hostname
+do
+  # apply hostfile to worker nodes via ssh
+  ssh_apply_hostfile "$hostname" "$new_worker_hostfile"
+  # configure resolv.conf via ssh
+  set_dns "$hostname"
+  # lock all configs
+  ssh_lock_configs "$hostname"
+done < "$controller_hostlist"
+
+# create master list of hosts in cluster
+cat "$worker_hostlist" >> "$list_of_all_hosts"
+cat "$controller_hostlist" >> "$list_of_all_hosts"
+
+while IFS= read -r hostname
+do
+  # stop all remote nodes from entering sleep mode
+  ssh_one_shot_command "$hostname" command_stop_sleep
+done < "$list_of_all_hosts"
+}
+
 ###############################################################################
 #   installtion of tooling for cloud operations
 ###############################################################################
@@ -897,11 +821,34 @@ sudo docker container rm "$(sudo docker container list -a -q)"
 sudo docker image rm "$(sudo docker image list -a -q)"
 }
 
-###############################################################################
-# transfer functionality, copies this script to worker VM and runs it with 
-# worker control flow
-###############################################################################
+create_bootable_iso()
+{
+sudo genisoimage -o /path/to/output.iso -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table /
 
+}
+
+Setting up the PXE server
+
+Install the tftpd-hpa package, which provides the TFTP server:
+Copy code
+sudo apt-get install tftpd-hpa
+Copy the ISO file to the TFTP server's root directory, which is typically /var/lib/tftpboot
+Copy code
+sudo cp /path/to/output.iso /var/lib/tftpboot
+Create the PXE configuration file for the ISO image, for example /var/lib/tftpboot/pxelinux.cfg/default
+Copy code
+default install
+label install
+kernel debian-installer/i386/linux
+append vga=normal initrd=debian-installer/i386/initrd.gz iso-scan/filename=/output.iso  ---
+configuring DHCP
+
+
+#If you're using NFS, you'll need to configure your NFS server to export the installation media directory.
+#If you're using HTTP, you'll need to configure your web server to serve the installation media directory, you could use apache2 or nginx
+#Once you've completed these steps, when you boot a client machine over the network, it should be able to load the PXE configuration from the server and boot from the ISO image you created.
+
+#Please note, there could be some variations in the paths and names, depending on the version of the tools and the architecture that you are using, for example for 64 bits or ARM, and also could be necessary some tweaks on config files, if you have any doubts, it is recommended to take a look on the official documentation and examples of each tool.
 #######################################
 # sends THIS file to the worker node
 # using the authorized RSA key
@@ -1029,3 +976,13 @@ fi
 if [ $TEST == 1 ]; then
 echo "testing"
 fi
+
+To back up existing state:
+
+Back up package selections with dpkg --get-selections > dpkg_selections.
+Back up the debconf database with sudo debconf-get-selections > debconf_selections.
+To apply this to a new system:
+
+First apply debconf selections with sudo debconf-set-selections < debconf_selections.
+Apply package selections with dpkg --set-selections < dpkg_selections.
+Install packages with apt-get dselect-upgrade.
